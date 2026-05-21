@@ -1,207 +1,328 @@
 import streamlit as st
 import pandas as pd
 import datetime
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from docx import Document
 
-# ------------------------------
-# CONFIG + STYLING
-# ------------------------------
-st.set_page_config(page_title="QA Tool", layout="wide")
+# -----------------------
+# PAGE CONFIG + THEME
+# -----------------------
+st.set_page_config(page_title="Internal Audit QA Tool", layout="wide")
 
 st.markdown("""
 <style>
-body, html, [class*="css"] {
-    font-family: Calibri, sans-serif;
+body, html {
+    font-family: Calibri;
+}
+.stApp {
+    background-color: #f4f4f4;
 }
 .stButton>button {
     background-color: #f1c40f;
     color: black;
     border-radius: 6px;
+    font-weight: bold;
+}
+.sidebar .sidebar-content {
+    background-color: #2b2b2b;
+    color: white;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------------------
-# SESSION INIT
-# ------------------------------
-if "users" not in st.session_state:
-    st.session_state["users"] = {"admin": "admin"}
+# -----------------------
+# SESSION STATE INIT
+# -----------------------
+def init():
+    defaults = {
+        "users": {"admin": "admin"},
+        "logged_in": False,
+        "user": "",
+        "clients": [],
+        "engagements": [],
+        "qa_data": [],
+        "logs": []
+    }
+    for k,v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
+init()
 
-if "user" not in st.session_state:
-    st.session_state["user"] = ""
-
-if "clients" not in st.session_state:
-    st.session_state["clients"] = []
-
-if "engagements" not in st.session_state:
-    st.session_state["engagements"] = []
-
-if "qa_results" not in st.session_state:
-    st.session_state["qa_results"] = []
-
-if "logs" not in st.session_state:
-    st.session_state["logs"] = []
-
+# -----------------------
+# MASTER CHECKLIST
+# -----------------------
 MASTER_CHECKLIST = [
     "Audit Planning",
     "Risk Assessment",
     "Control Testing",
-    "Evidence Review",
-    "Conclusion"
+    "Evidence Verification",
+    "Audit Conclusion"
 ]
 
-# ------------------------------
-# LOG
-# ------------------------------
-def log_action(user, action):
+MANDATORY_DOCS = [
+    "Audit Scoping Memo",
+    "Audit Report",
+    "RCM",
+    "Audit Program",
+    "Workpapers",
+    "Evidence"
+]
+
+# -----------------------
+# LOG FUNCTION
+# -----------------------
+def log(action):
     st.session_state["logs"].append({
-        "User": user,
+        "User": st.session_state["user"],
         "Action": action,
         "Time": datetime.datetime.now()
     })
 
-# ------------------------------
+# -----------------------
 # LOGIN
-# ------------------------------
+# -----------------------
 def login():
-    st.title("🔐 QA Tool Login")
+    st.title("🔐 Internal Audit QA Tool")
 
-    user = st.text_input("Username")
-    pwd = st.text_input("Password", type="password")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        if user in st.session_state["users"] and st.session_state["users"][user] == pwd:
+        if u in st.session_state["users"] and st.session_state["users"][u] == p:
             st.session_state["logged_in"] = True
-            st.session_state["user"] = user
-            log_action(user, "Login")
-            st.success("Login successful")
+            st.session_state["user"] = u
+            log("Login")
             st.rerun()
         else:
             st.error("Invalid credentials")
 
-# ------------------------------
+# -----------------------
 # DASHBOARD
-# ------------------------------
+# -----------------------
 def dashboard():
     st.title("📊 Dashboard")
 
-    total = len(st.session_state["qa_results"])
-    pass_count = len([x for x in st.session_state["qa_results"] if x["result"]=="Pass"])
-    fail_count = len([x for x in st.session_state["qa_results"] if x["result"]=="Fail"])
+    df = pd.DataFrame(st.session_state["qa_data"])
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total QA", total)
-    col2.metric("Pass", pass_count)
-    col3.metric("Fail", fail_count)
+    total = len(df)
+    completed = len(df[df["status"]=="Completed"]) if not df.empty else 0
+    inprogress = len(df[df["status"]=="In Progress"]) if not df.empty else 0
+    notstarted = total - completed - inprogress
 
-# ------------------------------
+    pass_count = len(df[df["result"]=="Pass"]) if not df.empty else 0
+    fail_count = len(df[df["result"]=="Fail"]) if not df.empty else 0
+
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Total QA", total)
+    c2.metric("Completed", completed)
+    c3.metric("In Progress", f"{inprogress}")
+    c4.metric("Not Started", notstarted)
+
+    st.progress(completed/(total+1))
+
+    st.write("✅ Pass:", pass_count, "❌ Fail:", fail_count)
+
+# -----------------------
 # CREATE CLIENT
-# ------------------------------
+# -----------------------
 def create_client():
     st.title("🏢 Create Client")
     name = st.text_input("Client Name")
 
-    if st.button("Save"):
+    if st.button("Add Client"):
         st.session_state["clients"].append(name)
-        st.success("Client added")
+        log(f"Client Created {name}")
+        st.success("Client saved")
 
-# ------------------------------
+# -----------------------
 # CREATE ENGAGEMENT
-# ------------------------------
+# -----------------------
 def create_engagement():
     st.title("📁 Create Engagement")
 
     client = st.selectbox("Client", st.session_state["clients"])
-    fy = st.text_input("FY")
+    fy = st.text_input("Financial Year")
+    process = st.text_input("Audit Process")
+    auditor = st.text_input("Auditor Name")
+    auditee = st.text_input("Auditee Name")
+    dept = st.text_input("Department")
+    title = st.text_input("Title")
 
     if st.button("Create"):
         st.session_state["engagements"].append({
             "client": client,
             "fy": fy,
-            "checklist": MASTER_CHECKLIST
+            "process": process,
+            "auditor": auditor,
+            "auditee": auditee,
+            "dept": dept,
+            "title": title,
+            "checklist": MASTER_CHECKLIST,
+            "docs": {}
         })
-        st.success("Created")
+        log("Engagement Created")
+        st.success("Engagement created")
 
-# ------------------------------
+# -----------------------
 # CHECKLIST
-# ------------------------------
+# -----------------------
 def checklist():
-    st.title("✅ Checklist")
+    st.title("✅ QA Checklist")
 
     if not st.session_state["engagements"]:
-        st.warning("No engagements")
+        st.warning("No engagement created")
         return
 
     eng = st.selectbox("Select Engagement", st.session_state["engagements"])
 
+    # Mandatory documents
+    st.subheader("📎 Mandatory Uploads")
+    for doc in MANDATORY_DOCS:
+        eng["docs"][doc] = st.file_uploader(doc, key=doc)
+
+    st.divider()
+
     for step in eng["checklist"]:
         st.subheader(step)
 
-        st.file_uploader("Upload File", key=step)
+        doc = st.file_uploader("Upload Evidence", key=step)
 
-        col1, col2, col3 = st.columns(3)
+        remark = st.text_area("Remarks", key=step+"r")
 
-        if col1.button("Pass", key=step+"p"):
-            save(step, "Pass")
+        col1,col2,col3 = st.columns(3)
 
-        if col2.button("Fail", key=step+"f"):
-            save(step, "Fail")
+        if col1.button("✔ Pass", key=step+"p"):
+            save(step, "Pass", remark)
 
-        if col3.button("N/A", key=step+"n"):
-            save(step, "NA")
+        if col2.button("❌ Fail", key=step+"f"):
+            save(step, "Fail", remark)
 
-# ------------------------------
-# SAVE RESULT
-# ------------------------------
-def save(step, result):
-    st.session_state["qa_results"].append({
+        if col3.button("N/A", key=step+"na"):
+            save(step, "NA", remark)
+
+        # Chat
+        if st.button("💬 Chat Assist", key=step+"c"):
+            prompt = st.text_input("Refine step")
+            st.info(f"AI Suggestion: Improve documentation for {step}")
+
+def save(step,result,remark):
+    st.session_state["qa_data"].append({
         "step": step,
-        "result": result
+        "result": result,
+        "remark": remark,
+        "status": "Completed"
     })
-    st.success(f"{step} marked {result}")
+    log(f"{step} marked {result}")
+    st.success("Saved ✔")
 
-# ------------------------------
+# -----------------------
+# REPORT
+# -----------------------
+def report():
+    st.title("📄 Final Report")
+
+    df = pd.DataFrame(st.session_state["qa_data"])
+
+    st.dataframe(df)
+
+    # Excel
+    st.download_button("Download Excel", df.to_csv(index=False), "QA.csv")
+
+    # PDF
+    def pdf_download():
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer)
+        c.drawString(100, 800, "QA Report")
+        c.save()
+        return buffer
+
+    st.download_button("Download PDF", pdf_download(), "QA.pdf")
+
+    # Word
+    def word_download():
+        doc = Document()
+        doc.add_heading("QA Report", 0)
+        for _,row in df.iterrows():
+            doc.add_paragraph(str(row.to_dict()))
+        buffer = BytesIO()
+        doc.save(buffer)
+        return buffer
+
+    st.download_button("Download Word", word_download(), "QA.docx")
+
+    # Chat refine report
+    if st.button("💬 Refine Report"):
+        st.info("AI Suggestion: Improve summary and observations.")
+
+# -----------------------
 # LOGS
-# ------------------------------
+# -----------------------
 def logs():
-    st.title("Logs")
+    st.title("📜 Audit Logs")
     st.dataframe(pd.DataFrame(st.session_state["logs"]))
 
-# ------------------------------
+# -----------------------
+# ARCHIVE
+# -----------------------
+def archive():
+    st.title("📦 Archive")
+
+    if st.button("Archive Data"):
+        st.session_state["qa_data"] = []
+        log("Archived")
+        st.success("Archived")
+
+# -----------------------
 # MAIN
-# ------------------------------
+# -----------------------
 if not st.session_state["logged_in"]:
     login()
-
 else:
-    st.sidebar.title("Menu")
+    st.sidebar.title("🚆 QA System")
 
     st.sidebar.write(f"👤 {st.session_state['user']}")
 
-    # ✅ LOGOUT FIXED
     if st.sidebar.button("🚪 Logout"):
-        log_action(st.session_state["user"], "Logout")
+        log("Logout")
         st.session_state["logged_in"] = False
         st.session_state["user"] = ""
         st.rerun()
 
-    menu = st.sidebar.radio("Go to", [
+    menu = st.sidebar.radio("Menu", [
+        "Home",
         "Dashboard",
         "Create Client",
         "Create Engagement",
         "Checklist",
-        "Logs"
+        "Report",
+        "Logs",
+        "Archive"
     ])
 
-    if menu == "Dashboard":
+    if menu == "Home":
+        st.title("🏠 Welcome to QA Tool")
+        st.write("System operates similar to structured workflow platforms.")
+
+    elif menu == "Dashboard":
         dashboard()
+
     elif menu == "Create Client":
         create_client()
+
     elif menu == "Create Engagement":
         create_engagement()
+
     elif menu == "Checklist":
         checklist()
+
+    elif menu == "Report":
+        report()
+
     elif menu == "Logs":
         logs()
+
+    elif menu == "Archive":
+        archive()
+``
